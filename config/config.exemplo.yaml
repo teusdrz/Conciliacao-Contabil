@@ -1,0 +1,31 @@
+# Config de exemplo - Conciliador Contábil Inteligente
+# Preenchido com os parâmetros do arquivo "Smart - Provisão de Bônus" (06/2026).
+# Copie para config/config.yaml e ajuste a cada nova conta/período.
+
+arquivo: "/mnt/user-data/uploads/1784319202280_202606_Smart-_Provisa_o_de_Bo_nus.xlsx"
+aba: "01.Razão (2)"
+linha_cabecalho: 6
+
+# Código da conta contábil sendo conciliada. Informe sempre explicitamente -
+# nunca deduza de outra aba (ex.: a aba "Capa" deste mesmo arquivo referencia
+# um código de conta diferente do usado no razão e no balancete - provável
+# resquício de um modelo reaproveitado de outra conta).
+conta: "2.1.1.05.0005"
+
+# Parâmetros do motor de conciliação
+tolerancia: 0.01        # tolerância de arredondamento, em R$
+max_grupo: 6             # tamanho máximo de grupo testado na Etapa 3 (combinações)
+similaridade_min: 80     # % mínimo de similaridade de texto na Etapa 2
+
+# Data de corte para cálculo de aging dos itens em aberto (AAAA-MM-DD).
+# Deixe em branco para usar a data do lançamento mais recente do próprio razão.
+data_corte: null
+
+# Balancete usado para a aba Ponte_Balancete (pode ser o mesmo arquivo ou outro)
+balancete_arquivo: "/mnt/user-data/uploads/1784319202280_202606_Smart-_Provisa_o_de_Bo_nus.xlsx"
+balancete_aba: "00.Balancete"
+# Se preferir não depender da leitura automática do balancete, informe o saldo aqui:
+# saldo_balancete: -425931.84
+
+saida: "razao_conciliado.xlsx"
+verbose: false
