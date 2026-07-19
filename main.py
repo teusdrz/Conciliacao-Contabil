@@ -143,5 +143,26 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def app(environ, start_response):
+    """Stub WSGI apenas para compatibilidade com plataformas de deploy que
+    exigem uma variável de nível superior 'app'/'application'/'handler'.
+
+    Este projeto é uma ferramenta de linha de comando (CLI), não um serviço
+    web. Use: python main.py --arquivo caminho/para/razao.xlsx
+    """
+    status = "200 OK"
+    headers = [("Content-Type", "text/plain; charset=utf-8")]
+    start_response(status, headers)
+    mensagem = (
+        "Conciliador Contabil Inteligente e uma ferramenta de linha de comando (CLI).\n"
+        "Use: python main.py --arquivo caminho/para/razao.xlsx\n"
+    )
+    return [mensagem.encode("utf-8")]
+
+
+application = app
+handler = app
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
