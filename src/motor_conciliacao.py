@@ -91,10 +91,24 @@ class ConciliadorContabil:
     def _pool_aberto(self) -> pd.DataFrame:
         return self.df[self.df["residual_centavos"] != 0]
 
-    def _marcar_grupo(self, indices: list[int], regra: str, etapa: str, detalhe: str = "") -> str:
+    def _marcar_grupo(
+        self, indices: list[int], regra: str, etapa: str, detalhe: str = "",
+        tolerancia_cent: int | None = None,
+    ) -> str:
         id_grupo = self._novo_id_grupo()
         ids_lote = self.df.loc[indices, "id_lancamento"].tolist()
         valor_total = int(self.df.loc[indices, "residual_centavos"].sum())
+        # "efeito zero" so pode ser gravado no Obs se a soma do VALOR BRUTO
+        # original das linhas deste grupo realmente fecha em zero (dentro da
+        # tolerancia) - nao basta cada linha ter chegado a residual zero
+        # individualmente. Isso importa na Etapa 5 (FIFO): um componente
+        # cronologico pode zerar o residual de uma linha usando valor "emprestado"
+        # de uma contraparte que ficou so parcialmente baixada (fora deste grupo);
+        # nesse caso a soma bruta do subconjunto marcado aqui nao fecha em zero,
+        # entao o Obs nao deve dizer "efeito zero".
+        tol = self.tol_cent if tolerancia_cent is None else tolerancia_cent
+        soma_valor_bruto = int(self.df.loc[indices, "valor_centavos"].sum())
+        fecha_em_zero = abs(soma_valor_bruto) <= tol
         for idx in indices:
             meu_id = self.df.loc[idx, "id_lancamento"]
             contrapartes = [i for i in ids_lote if i != meu_id]
@@ -103,7 +117,8 @@ class ConciliadorContabil:
             self.df.loc[idx, "regra_aplicada"] = regra
             self.df.loc[idx, "contraparte"] = ", ".join(contrapartes)
             self.df.loc[idx, "residual_centavos"] = 0
-            self.df.loc[idx, "obs"] = "efeito zero"
+            if fecha_em_zero:
+                self.df.loc[idx, "obs"] = "efeito zero"
         self.trilha_auditoria.append(
             EventoAuditoria(etapa, regra, id_grupo, ids_lote, valor_total, detalhe)
         )
@@ -166,6 +181,7 @@ class ConciliadorContabil:
             self._marcar_grupo(
                 [idx_c, idx_d], "Referência", "2",
                 detalhe=f"similaridade texto={candidatos.loc[idx_d, 'similaridade']:.0f}%",
+                tolerancia_cent=tol_larga,
             )
             usados.add(idx_c)
             usados.add(idx_d)
