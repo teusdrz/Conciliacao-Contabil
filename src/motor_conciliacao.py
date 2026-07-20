@@ -22,7 +22,6 @@ linhas envolvidas - nenhum match "silencioso".
 """
 from __future__ import annotations
 
-import itertools
 import logging
 from dataclasses import dataclass, field
 
@@ -175,14 +174,70 @@ class ConciliadorContabil:
         return self
 
     # ------------------------------------------------------------- etapa 3
+    _LIMITE_ESTADOS_SUBCONJUNTO = 4_000  # trava de seguranca contra explosao combinatoria
+
+    @classmethod
+    def _tabela_somas_alcancaveis(
+        cls, itens: list[tuple[int, int]], limite_superior: int, tam_max: int
+    ) -> list[dict[int, list[int]]]:
+        """itens: [(indice_df, valor_centavos), ...], todos com o mesmo sinal
+        (ja normalizados como positivos por quem chama). Constroi, em uma
+        unica passada, todas as somas alcancaveis usando de 1 a 'tam_max'
+        itens sem ultrapassar 'limite_superior'.
+
+        Implementado como programacao dinamica podada pelo valor-alvo (nao
+        como forca bruta de itertools.combinations): como todos os itens tem
+        o mesmo sinal, qualquer soma parcial que ja ultrapasse o limite
+        nunca pode virar um match valido e e descartada na hora. A tabela e
+        montada UMA VEZ e reaproveitada para todos os alvos do lote (em vez
+        de refazer a busca do zero a cada alvo), o que evita a explosao
+        combinatoria de C(n, tam_max) quando a base de busca e grande (ex.:
+        toda a base em vez de so um periodo). 'limite_estados' funciona como
+        trava de seguranca: se um nivel crescer alem do limite, paramos de
+        expandi-lo ali (protege contra travamentos em cenarios sem solucao
+        real, sem afetar o resultado nos casos normais).
+        """
+        limite_estados = cls._LIMITE_ESTADOS_SUBCONJUNTO
+        estados: list[dict[int, list[int]]] = [dict() for _ in range(tam_max + 1)]
+        estados[0][0] = []
+        for idx, valor in itens:
+            if valor > limite_superior:
+                continue  # item sozinho ja estoura o alvo, nunca entra em nenhuma combinacao
+            for tam in range(tam_max - 1, -1, -1):
+                origem = estados[tam]
+                if not origem:
+                    continue
+                destino = estados[tam + 1]
+                if len(destino) >= limite_estados:
+                    continue
+                for soma_atual, combo_atual in origem.items():
+                    nova_soma = soma_atual + valor
+                    if nova_soma > limite_superior:
+                        continue
+                    if nova_soma not in destino:
+                        destino[nova_soma] = combo_atual + [idx]
+                        if len(destino) >= limite_estados:
+                            break
+        return estados
+
     @staticmethod
-    def _buscar_subconjunto(itens: list[tuple[int, int]], alvo: int, tol: int, tam_max: int) -> list[int] | None:
-        """itens: [(indice_df, valor_centavos), ...]. Procura a primeira combinacao
-        (testando tamanhos crescentes) cuja soma bate com alvo dentro da tolerancia."""
-        for tam in range(2, min(tam_max, len(itens)) + 1):
-            for combo in itertools.combinations(itens, tam):
-                if abs(sum(v for _, v in combo) - alvo) <= tol:
-                    return [idx for idx, _ in combo]
+    def _buscar_na_tabela(
+        estados: list[dict[int, list[int]]], alvo: int, tol: int, usados: set[int] = frozenset()
+    ) -> list[int] | None:
+        """Procura, na tabela ja construida, a menor combinacao (tamanho
+        crescente) cuja soma bate com 'alvo' dentro da tolerancia, ignorando
+        combinacoes que usem algum indice ja consumido por outro match neste
+        mesmo lote ('usados'). Como a tolerancia e pequena, basta checar as
+        poucas chaves vizinhas de 'alvo' em vez de varrer a tabela inteira -
+        assim a busca por alvo continua rapida mesmo com a tabela cheia."""
+        for tam in range(2, len(estados)):
+            nivel = estados[tam]
+            if not nivel:
+                continue
+            for delta in range(-tol, tol + 1):
+                combo = nivel.get(alvo + delta)
+                if combo is not None and usados.isdisjoint(combo):
+                    return combo
         return None
 
     def _etapa3_um_lado(self, direcao_alvo: str) -> int:
@@ -213,18 +268,35 @@ class ConciliadorContabil:
                 break
             itens_fonte = [(idx, -v if direcao_alvo == "debito" else v)
                            for idx, v in fonte["residual_centavos"].items()]
+            tam_max = min(self.max_grupo, len(itens_fonte))
+            if tam_max < 2:
+                break
+            limite_superior = int(alvos["residual_centavos"].abs().max()) + self.tol_cent
+            tabela = self._tabela_somas_alcancaveis(itens_fonte, limite_superior, tam_max)
+
+            # Reaproveita a MESMA tabela para varios alvos do lote (em vez de
+            # reconstrui-la a cada match individual) - assim que um alvo e um
+            # combo sao consumidos, seus indices entram em 'usados' para que
+            # nenhum outro alvo do mesmo lote tente reutiliza-los.
+            usados: set[int] = set()
             for idx_alvo, valor_alvo in alvos["residual_centavos"].items():
+                if idx_alvo in usados:
+                    continue
                 alvo_abs = abs(valor_alvo)
-                combo = self._buscar_subconjunto(itens_fonte, alvo_abs, self.tol_cent, self.max_grupo)
+                combo = self._buscar_na_tabela(tabela, alvo_abs, self.tol_cent, usados)
                 if combo:
                     regra = "Agrupado (N:1)" if direcao_alvo == "debito" else "Agrupado (1:N)"
                     self._marcar_grupo(
                         combo + [idx_alvo], regra, "3",
                         detalhe=f"{len(combo)} lançamento(s) vs. 1 (toda a base, todos os períodos)",
                     )
+                    usados.update(combo)
+                    usados.add(idx_alvo)
                     n_matches += 1
                     progresso = True
-                    break  # recomeca o pool (mudou de estado)
+            # Reconstroi a tabela apenas quando o lote inteiro ja foi
+            # percorrido (progresso=True refaz o pool para pegar o que ainda
+            # sobrou), em vez de a cada match individual.
         return n_matches
 
     def etapa3_match_agrupado(self) -> "ConciliadorContabil":
