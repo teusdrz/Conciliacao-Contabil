@@ -89,7 +89,8 @@ class TestGrupoNParaUm:
         """Com max_grupo menor que o tamanho do grupo real, a Etapa 3 sozinha
         não encontra o match - mas a Etapa 4 (netting do período) deve pegar,
         já que o período fecha em zero de qualquer forma. Isso é o comportamento
-        real observado no arquivo de origem (ano de 2021, max_grupo padrão=6)."""
+        real observado no arquivo de origem (ano de 2021) quando max_grupo é
+        forçado abaixo do padrão atual do sistema (15) para simular o caso."""
         linhas = [
             _linha(2021, "2021-01-31", "PROV BONUS A PAGAR ACIONISTA", -22500),
             _linha(2021, "2021-02-28", "PROV BONUS A PAGAR ACIONISTA", -22500),
@@ -106,7 +107,7 @@ class TestGrupoNParaUm:
             _linha(2021, "2021-12-31", "EST PROV BONUS", 324000),
         ]
         df = _montar_df(linhas)
-        motor = ConciliadorContabil(df, tolerancia=0.01, max_grupo=6)  # padrão do sistema
+        motor = ConciliadorContabil(df, tolerancia=0.01, max_grupo=6)  # forçado abaixo do padrão (15) p/ testar fallback
         resultado = motor.rodar_cascata()
 
         assert (resultado["residual_centavos"] == 0).all()

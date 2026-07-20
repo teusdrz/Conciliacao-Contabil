@@ -58,7 +58,7 @@ def main() -> None:
         conta = st.text_input("Código da conta (opcional, para a Ponte com o balancete)", value="")
         st.divider()
         tolerancia = st.number_input("Tolerância (R$)", min_value=0.0, value=0.01, step=0.01, format="%.2f")
-        max_grupo = st.slider("Tamanho máximo de grupo (Etapa 3)", min_value=2, max_value=15, value=6)
+        max_grupo = st.slider("Tamanho máximo de grupo (Etapa 3)", min_value=2, max_value=20, value=15)
         similaridade_min = st.slider("Similaridade mínima de texto % (Etapa 2)", min_value=50, max_value=100, value=80)
         st.divider()
         usar_balancete = st.checkbox("Ler saldo do balancete automaticamente (aba 00.Balancete do mesmo arquivo)", value=True)

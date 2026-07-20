@@ -62,7 +62,7 @@ class ConciliadorContabil:
         self,
         df: pd.DataFrame,
         tolerancia: float = 0.01,
-        max_grupo: int = 6,
+        max_grupo: int = 15,
         similaridade_min: int = 80,
         data_corte: pd.Timestamp | None = None,
     ):
@@ -244,90 +244,96 @@ class ConciliadorContabil:
         return estados
 
     @staticmethod
-    def _buscar_na_tabela(
-        estados: list[dict[int, list[int]]], alvo: int, tol: int, usados: set[int] = frozenset()
-    ) -> list[int] | None:
-        """Procura, na tabela ja construida, a menor combinacao (tamanho
-        crescente) cuja soma bate com 'alvo' dentro da tolerancia, ignorando
-        combinacoes que usem algum indice ja consumido por outro match neste
-        mesmo lote ('usados'). Como a tolerancia e pequena, basta checar as
-        poucas chaves vizinhas de 'alvo' em vez de varrer a tabela inteira -
-        assim a busca por alvo continua rapida mesmo com a tabela cheia."""
-        for tam in range(2, len(estados)):
-            nivel = estados[tam]
-            if not nivel:
+    def _achatar_tabela(estados: list[dict[int, list[int]]]) -> dict[int, tuple[int, list[int]]]:
+        """Funde todos os niveis (tamanhos de combinacao) de uma tabela numa
+        unica busca por soma -> (tamanho, combo), preferindo sempre a MENOR
+        combinacao para cada soma (tamanho 1 antes de 2, antes de 3...). Isso
+        permite comparar o lado dos creditos com o lado dos debitos numa
+        unica passada, em vez de um laco aninhado por tamanho."""
+        achatada: dict[int, tuple[int, list[int]]] = {}
+        for tam, nivel in enumerate(estados):
+            if tam == 0 or not nivel:
                 continue
-            for delta in range(-tol, tol + 1):
-                combo = nivel.get(alvo + delta)
-                if combo is not None and usados.isdisjoint(combo):
-                    return combo
-        return None
+            for soma, combo in nivel.items():
+                if soma not in achatada:
+                    achatada[soma] = (tam, combo)
+        return achatada
 
-    def _etapa3_um_lado(self, direcao_alvo: str) -> int:
-        """direcao_alvo='debito' -> procura 1 debito == soma de N creditos (N:1)
-        direcao_alvo='credito' -> procura 1 credito == soma de N debitos (1:N)
+    def _buscar_melhor_par_credito_debito(
+        self, tabela_creditos: list[dict[int, list[int]]], tabela_debitos: list[dict[int, list[int]]],
+    ) -> tuple[list[int], list[int]] | None:
+        """Procura, entre TODAS as combinacoes possiveis de creditos (1..N
+        itens) e TODAS as combinacoes possiveis de debitos (1..M itens), o
+        par cuja soma fecha em zero dentro da tolerancia - ou seja, um
+        verdadeiro match N:M (varios creditos E varios debitos ao mesmo
+        tempo), nao apenas N:1 ou 1:N. Prefere sempre o par com o MENOR
+        numero total de lancamentos envolvidos (empate: menor diferenca
+        residual), para manter a auditoria o mais enxuta/especifica possivel."""
+        achatada_debitos = self._achatar_tabela(tabela_debitos)
+        melhor: tuple[int, int, list[int], list[int]] | None = None  # (tam_total, |delta|, combo_c, combo_d)
+        for tam_c, nivel_c in enumerate(tabela_creditos):
+            if tam_c == 0 or not nivel_c:
+                continue
+            for soma_c, combo_c in nivel_c.items():
+                for delta in range(-self.tol_cent, self.tol_cent + 1):
+                    alvo_d = soma_c + delta
+                    if alvo_d <= 0:
+                        continue
+                    achado = achatada_debitos.get(alvo_d)
+                    if achado is None:
+                        continue
+                    tam_d, combo_d = achado
+                    candidato = (tam_c + tam_d, abs(delta), combo_c, combo_d)
+                    if melhor is None or candidato[:2] < melhor[:2]:
+                        melhor = candidato
+        if melhor is None:
+            return None
+        return melhor[2], melhor[3]
 
-        Busca em toda a base (sem filtrar por periodo/ano): o credito e os
-        debitos que somam com ele podem estar em anos diferentes - o que
-        importa e o conjunto zerar (positivo compensando negativo) dentro da
-        tolerancia configurada.
-        """
+    def etapa3_match_agrupado(self) -> "ConciliadorContabil":
+        """Busca combinacoes N:M entre creditos e debitos: os DOIS lados podem
+        ter mais de um lancamento (ex.: 11 creditos + 2 debitos fechando em
+        zero juntos), nao apenas N:1 ou 1:N. Busca em toda a base, sem
+        filtrar por periodo/ano - creditos e debitos que se compensam podem
+        estar em anos diferentes."""
         n_matches = 0
         progresso = True
         while progresso:
             progresso = False
             pool = self._pool_aberto()
-            if direcao_alvo == "debito":
-                alvos = pool[pool["residual_centavos"] > 0].sort_values(
-                    "residual_centavos", ascending=False
-                )
-                fonte = pool[pool["residual_centavos"] < 0]
+            creditos = [(idx, -v) for idx, v in pool[pool["residual_centavos"] < 0]["residual_centavos"].items()]
+            debitos = [(idx, v) for idx, v in pool[pool["residual_centavos"] > 0]["residual_centavos"].items()]
+            if len(creditos) < 1 or len(debitos) < 1 or (len(creditos) + len(debitos)) < 2:
+                break
+            tam_max_c = min(self.max_grupo, len(creditos))
+            tam_max_d = min(self.max_grupo, len(debitos))
+            if tam_max_c < 1 or tam_max_d < 1:
+                break
+            limite_superior = int(pool["residual_centavos"].abs().sum())
+            tabela_creditos = self._tabela_somas_alcancaveis(creditos, limite_superior, tam_max_c)
+            tabela_debitos = self._tabela_somas_alcancaveis(debitos, limite_superior, tam_max_d)
+
+            par = self._buscar_melhor_par_credito_debito(tabela_creditos, tabela_debitos)
+            if par is None:
+                break
+            combo_c, combo_d = par
+            if len(combo_c) == 1:
+                regra = "Agrupado (1:N)"
+            elif len(combo_d) == 1:
+                regra = "Agrupado (N:1)"
             else:
-                alvos = pool[pool["residual_centavos"] < 0].sort_values(
-                    "residual_centavos", ascending=True
-                )
-                fonte = pool[pool["residual_centavos"] > 0]
-            if alvos.empty or len(fonte) < 2:
-                break
-            itens_fonte = [(idx, -v if direcao_alvo == "debito" else v)
-                           for idx, v in fonte["residual_centavos"].items()]
-            tam_max = min(self.max_grupo, len(itens_fonte))
-            if tam_max < 2:
-                break
-            limite_superior = int(alvos["residual_centavos"].abs().max()) + self.tol_cent
-            tabela = self._tabela_somas_alcancaveis(itens_fonte, limite_superior, tam_max)
-
-            # Reaproveita a MESMA tabela para varios alvos do lote (em vez de
-            # reconstrui-la a cada match individual) - assim que um alvo e um
-            # combo sao consumidos, seus indices entram em 'usados' para que
-            # nenhum outro alvo do mesmo lote tente reutiliza-los.
-            usados: set[int] = set()
-            for idx_alvo, valor_alvo in alvos["residual_centavos"].items():
-                if idx_alvo in usados:
-                    continue
-                alvo_abs = abs(valor_alvo)
-                combo = self._buscar_na_tabela(tabela, alvo_abs, self.tol_cent, usados)
-                if combo:
-                    regra = "Agrupado (N:1)" if direcao_alvo == "debito" else "Agrupado (1:N)"
-                    self._marcar_grupo(
-                        combo + [idx_alvo], regra, "3",
-                        detalhe=f"{len(combo)} lançamento(s) vs. 1 (toda a base, todos os períodos)",
-                    )
-                    usados.update(combo)
-                    usados.add(idx_alvo)
-                    n_matches += 1
-                    progresso = True
-            # Reconstroi a tabela apenas quando o lote inteiro ja foi
-            # percorrido (progresso=True refaz o pool para pegar o que ainda
-            # sobrou), em vez de a cada match individual.
-        return n_matches
-
-    def etapa3_match_agrupado(self) -> "ConciliadorContabil":
-        n1 = self._etapa3_um_lado("debito")   # N creditos : 1 debito
-        n2 = self._etapa3_um_lado("credito")  # 1 credito : N debitos
+                regra = "Agrupado (N:M)"
+            self._marcar_grupo(
+                combo_c + combo_d, regra, "3",
+                detalhe=(
+                    f"{len(combo_c)} crédito(s) vs. {len(combo_d)} débito(s) "
+                    "(toda a base, todos os períodos)"
+                ),
+            )
+            n_matches += 1
+            progresso = True  # refaz o pool inteiro e tenta achar outro grupo
         logger.info(
-            "Etapa 3 (match agrupado N:1 / 1:N em toda a base): %d + %d grupo(s) conciliado(s).",
-            n1, n2,
+            "Etapa 3 (match agrupado N:M em toda a base): %d grupo(s) conciliado(s).", n_matches,
         )
         return self
 

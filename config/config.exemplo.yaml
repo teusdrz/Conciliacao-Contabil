@@ -14,7 +14,7 @@ conta: "2.1.1.05.0005"
 
 # Parâmetros do motor de conciliação
 tolerancia: 0.01        # tolerância de arredondamento, em R$
-max_grupo: 6             # tamanho máximo de grupo testado na Etapa 3 (combinações)
+max_grupo: 15            # tamanho máximo de grupo testado na Etapa 3 (combinações N:M, cada lado)
 similaridade_min: 80     # % mínimo de similaridade de texto na Etapa 2
 
 # Data de corte para cálculo de aging dos itens em aberto (AAAA-MM-DD).
