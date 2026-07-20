@@ -115,6 +115,16 @@ class ConciliadorContabil:
         tol = self.tol_cent if tolerancia_cent is None else tolerancia_cent
         soma_valor_bruto = int(self.df.loc[indices, "valor_centavos"].sum())
         fecha_em_zero = abs(soma_valor_bruto) <= tol
+        # Na Etapa 5 (FIFO), "indices" e sempre o subconjunto "zerados": linhas cujo
+        # residual_centavos JA chegou a 0 (100% baixadas), mesmo quando o subconjunto
+        # sozinho nao fecha em zero no bruto (porque uma contraparte parcial, fora
+        # deste grupo, absorveu parte da diferenca). Financeiramente a linha esta
+        # totalmente conciliada - so o rotulo "via FIFO" muda pra deixar claro que a
+        # baixa veio de consumo cronologico de varias sobras, e nao de um par direto.
+        if regra == "FIFO":
+            obs_texto = "efeito zero" if fecha_em_zero else "efeito zero (via FIFO) - ver contraparte"
+        else:
+            obs_texto = "efeito zero" if fecha_em_zero else "baixa parcial (FIFO) - ver contraparte"
         for idx in indices:
             meu_id = self.df.loc[idx, "id_lancamento"]
             contrapartes = [i for i in ids_lote if i != meu_id]
@@ -123,9 +133,7 @@ class ConciliadorContabil:
             self.df.loc[idx, "regra_aplicada"] = regra
             self.df.loc[idx, "contraparte"] = ", ".join(contrapartes)
             self.df.loc[idx, "residual_centavos"] = 0
-            self.df.loc[idx, "obs"] = (
-                "efeito zero" if fecha_em_zero else "baixa parcial (FIFO) - ver contraparte"
-            )
+            self.df.loc[idx, "obs"] = obs_texto
         self.trilha_auditoria.append(
             EventoAuditoria(etapa, regra, id_grupo, ids_lote, valor_total, detalhe)
         )
