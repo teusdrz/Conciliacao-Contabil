@@ -21,7 +21,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from classificador import aplicar_classificacao  # noqa: E402
-from excel_io import carregar_razao, ler_saldo_balancete  # noqa: E402
+from excel_io import atualizar_obs_arquivo_original, carregar_razao, ler_saldo_balancete  # noqa: E402
 from motor_conciliacao import ConciliadorContabil  # noqa: E402
 from relatorios import gerar_excel_saida  # noqa: E402
 
@@ -114,6 +114,9 @@ def main() -> None:
         caminho_saida = tmp_dir / f"{Path(arquivo_up.name).stem}_conciliado.xlsx"
         gerar_excel_saida(resultado, resumo, ponte, caminho_saida, conta=conta, periodo_referencia="")
 
+        caminho_original_atualizado = tmp_dir / f"{Path(arquivo_up.name).stem}_atualizado.xlsx"
+        atualizar_obs_arquivo_original(caminho_tmp, resultado, caminho_original_atualizado, aba=aba)
+
     st.success("Conciliação concluída.")
 
     # ---------------------------------------------------------------- KPIs
@@ -195,13 +198,24 @@ def main() -> None:
         )
 
     st.divider()
-    st.download_button(
-        "⬇ Baixar Excel conciliado",
-        data=caminho_saida.read_bytes(),
-        file_name=caminho_saida.name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-    )
+    col_dl1, col_dl2 = st.columns(2)
+    with col_dl1:
+        st.download_button(
+            "⬇ Baixar seu arquivo original atualizado",
+            data=caminho_original_atualizado.read_bytes(),
+            file_name=caminho_original_atualizado.name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            help=f"Mesmo arquivo que você enviou (todas as abas), só a coluna Obs. da aba '{aba}' é preenchida.",
+        )
+    with col_dl2:
+        st.download_button(
+            "⬇ Baixar relatório detalhado (4 abas)",
+            data=caminho_saida.read_bytes(),
+            file_name=caminho_saida.name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Relatório à parte com Detalhe_Conciliacao, Resumo_Periodo, Itens_Em_Aberto e Ponte_Balancete.",
+        )
 
 
 if __name__ == "__main__":

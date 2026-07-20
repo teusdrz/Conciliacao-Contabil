@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.utils import column_index_from_string
 
 logger = logging.getLogger("conciliador.excel_io")
 
@@ -142,6 +143,43 @@ def carregar_razao(
             total_cache,
         )
     return resultado
+
+
+def atualizar_obs_arquivo_original(
+    arquivo_original: str | Path,
+    resultado: pd.DataFrame,
+    caminho_saida: str | Path,
+    aba: str = "01.Razão (2)",
+    coluna_obs: str = "N",
+) -> Path:
+    """Devolve o PROPRIO arquivo original (todas as abas, formulas, formatacao e
+    dados intactos) mudando apenas o conteudo da coluna Obs. da aba informada.
+
+    Nenhuma outra aba e nenhuma outra coluna dessa aba e tocada - inclusive a
+    formula de conferencia (=SUBTOTAL(...)) perto do topo continua exatamente
+    como estava. So se escreve "Efeito zero" quando o grupo daquela linha
+    realmente fecha em zero (mesma regra do motor de conciliacao); caso
+    contrario a celula fica em branco, igual a convencao ja usada no arquivo
+    original para itens que nao fecham sozinhos.
+    """
+    wb = load_workbook(arquivo_original)
+    ws = wb[aba]
+    col_idx = column_index_from_string(coluna_obs)
+
+    for linha_origem, obs in zip(resultado["linha_origem"], resultado["obs"]):
+        texto = "Efeito zero" if str(obs).strip().lower() == "efeito zero" else None
+        # ws.cell(..., value=None) NAO limpa a celula (openpyxl trata None como
+        # "valor nao informado", nao como "apagar") - por isso a atribuicao
+        # direta de .value e obrigatoria aqui.
+        ws.cell(row=int(linha_origem), column=col_idx).value = texto
+
+    caminho_saida = Path(caminho_saida)
+    wb.save(caminho_saida)
+    logger.info(
+        "Arquivo original atualizado (só a coluna %s da aba '%s') salvo em %s",
+        coluna_obs, aba, caminho_saida,
+    )
+    return caminho_saida
 
 
 def ler_saldo_balancete(

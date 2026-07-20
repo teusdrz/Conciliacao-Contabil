@@ -79,6 +79,12 @@ class ConciliadorContabil:
         self.df["id_match"] = pd.array([None] * len(self.df), dtype="string")
         self.df["regra_aplicada"] = ""
         self.df["contraparte"] = ""
+        # a coluna Obs. do arquivo de origem pode trazer texto velho/manual
+        # (ex.: planilhas reais as vezes tem "Efeito zero" digitado numa linha
+        # que na verdade ainda esta em aberto, ou lixo de outra analise). O
+        # motor e a UNICA fonte da verdade para o Obs de saida: sempre comeca
+        # limpo e so grava algo quando a propria cascata concilia a linha.
+        self.df["obs"] = ""
 
         self._contador_grupo = 0
         self.trilha_auditoria: list[EventoAuditoria] = []

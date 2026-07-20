@@ -23,7 +23,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from classificador import aplicar_classificacao  # noqa: E402
-from excel_io import carregar_razao, ler_saldo_balancete  # noqa: E402
+from excel_io import atualizar_obs_arquivo_original, carregar_razao, ler_saldo_balancete  # noqa: E402
 from motor_conciliacao import ConciliadorContabil  # noqa: E402
 from relatorios import gerar_excel_saida  # noqa: E402
 
@@ -65,6 +65,11 @@ def montar_parser() -> argparse.ArgumentParser:
     p.add_argument("--balancete-aba", default=None, help='Nome da aba de balancete (padrão: "00.Balancete")')
     p.add_argument("--saldo-balancete", type=float, default=None, help="Informe manualmente o saldo do balancete, se preferir não ler de uma aba")
     p.add_argument("--saida", default=None, help="Caminho do Excel de saída")
+    p.add_argument(
+        "--saida-original", default=None,
+        help="Caminho do arquivo original atualizado (mesmas abas do --arquivo, só a "
+        "coluna Obs. da aba do razão é preenchida). Padrão: <arquivo>_atualizado.xlsx",
+    )
     p.add_argument("--verbose", action="store_true", help="Log detalhado (DEBUG)")
     return p
 
@@ -101,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     nome_base = Path(arquivo).stem
     saida_padrao = f"{nome_base}_conciliado_{datetime.now():%Y%m%d}.xlsx"
     saida = opt("saida", "saida", saida_padrao)
+    saida_original_padrao = f"{nome_base}_atualizado.xlsx"
+    saida_original = opt("saida_original", "saida_original", saida_original_padrao)
 
     logger.info("Carregando razão: %s [aba=%s]", arquivo, aba)
     carregado = carregar_razao(arquivo, aba=aba, linha_cabecalho=linha_cabecalho)
@@ -136,10 +143,12 @@ def main(argv: list[str] | None = None) -> int:
 
     periodo_ref = data_corte.strftime("%m/%Y") if data_corte else str(df["data"].max().strftime("%m/%Y"))
     gerar_excel_saida(resultado, resumo, ponte, saida, conta=conta, periodo_referencia=periodo_ref)
+    atualizar_obs_arquivo_original(arquivo, resultado, saida_original, aba=aba)
 
     total_aberto = resultado.loc[resultado["residual_centavos"] != 0, "valor_residual"].sum()
     logger.info("Concluído. Total em aberto após a cascata: %.2f", total_aberto)
     logger.info("Arquivo gerado: %s", saida)
+    logger.info("Arquivo original atualizado: %s", saida_original)
     return 0
 
 
