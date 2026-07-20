@@ -4,9 +4,13 @@ O motor do Conciliador Contabil Inteligente: uma cascata de 6 regras que
 concilia lancamentos a credito (entrada/provisao, Valor<0) com lancamentos a
 debito (saida/reversao, Valor>0), na ordem:
 
-    1. Match exato 1:1               (mesmo valor absoluto, um credito x um debito)
-    2. Match por referencia/texto     (valor proximo + historico parecido)
-    3. Match agrupado N:1 / 1:N / N:M (soma de subconjuntos, por periodo)
+    1. Match exato 1:1               (mesmo valor absoluto, um credito x um debito,
+                                       em toda a base, sem restricao de periodo/ano)
+    2. Match por referencia/texto     (valor proximo + historico parecido, tambem
+                                       em toda a base, sem restricao de periodo/ano)
+    3. Match agrupado N:1 / 1:N / N:M (soma de subconjuntos que fecha em zero,
+                                       em toda a base - credito(s) x debito(s)
+                                       podem estar em anos/periodos diferentes)
     4. Netting por periodo            (fecha o residuo do periodo inteiro em bloco)
     5. FIFO global                    (compensa cronologicamente o que sobrar,
                                        inclusive atravessando anos, com baixa parcial)
@@ -183,47 +187,51 @@ class ConciliadorContabil:
 
     def _etapa3_um_lado(self, direcao_alvo: str) -> int:
         """direcao_alvo='debito' -> procura 1 debito == soma de N creditos (N:1)
-        direcao_alvo='credito' -> procura 1 credito == soma de N debitos (1:N)"""
+        direcao_alvo='credito' -> procura 1 credito == soma de N debitos (1:N)
+
+        Busca em toda a base (sem filtrar por periodo/ano): o credito e os
+        debitos que somam com ele podem estar em anos diferentes - o que
+        importa e o conjunto zerar (positivo compensando negativo) dentro da
+        tolerancia configurada.
+        """
         n_matches = 0
-        for periodo in sorted(self.df["periodo"].dropna().unique()):
-            progresso = True
-            while progresso:
-                progresso = False
-                pool = self._pool_aberto()
-                pool = pool[pool["periodo"] == periodo]
-                if direcao_alvo == "debito":
-                    alvos = pool[pool["residual_centavos"] > 0].sort_values(
-                        "residual_centavos", ascending=False
+        progresso = True
+        while progresso:
+            progresso = False
+            pool = self._pool_aberto()
+            if direcao_alvo == "debito":
+                alvos = pool[pool["residual_centavos"] > 0].sort_values(
+                    "residual_centavos", ascending=False
+                )
+                fonte = pool[pool["residual_centavos"] < 0]
+            else:
+                alvos = pool[pool["residual_centavos"] < 0].sort_values(
+                    "residual_centavos", ascending=True
+                )
+                fonte = pool[pool["residual_centavos"] > 0]
+            if alvos.empty or len(fonte) < 2:
+                break
+            itens_fonte = [(idx, -v if direcao_alvo == "debito" else v)
+                           for idx, v in fonte["residual_centavos"].items()]
+            for idx_alvo, valor_alvo in alvos["residual_centavos"].items():
+                alvo_abs = abs(valor_alvo)
+                combo = self._buscar_subconjunto(itens_fonte, alvo_abs, self.tol_cent, self.max_grupo)
+                if combo:
+                    regra = "Agrupado (N:1)" if direcao_alvo == "debito" else "Agrupado (1:N)"
+                    self._marcar_grupo(
+                        combo + [idx_alvo], regra, "3",
+                        detalhe=f"{len(combo)} lançamento(s) vs. 1 (toda a base, todos os períodos)",
                     )
-                    fonte = pool[pool["residual_centavos"] < 0]
-                else:
-                    alvos = pool[pool["residual_centavos"] < 0].sort_values(
-                        "residual_centavos", ascending=True
-                    )
-                    fonte = pool[pool["residual_centavos"] > 0]
-                if alvos.empty or len(fonte) < 2:
-                    continue
-                itens_fonte = [(idx, -v if direcao_alvo == "debito" else v)
-                               for idx, v in fonte["residual_centavos"].items()]
-                for idx_alvo, valor_alvo in alvos["residual_centavos"].items():
-                    alvo_abs = abs(valor_alvo)
-                    combo = self._buscar_subconjunto(itens_fonte, alvo_abs, self.tol_cent, self.max_grupo)
-                    if combo:
-                        regra = "Agrupado (N:1)" if direcao_alvo == "debito" else "Agrupado (1:N)"
-                        self._marcar_grupo(
-                            combo + [idx_alvo], regra, "3",
-                            detalhe=f"período {periodo}, {len(combo)} lançamento(s) vs. 1",
-                        )
-                        n_matches += 1
-                        progresso = True
-                        break  # recomeca o pool deste periodo (mudou de estado)
+                    n_matches += 1
+                    progresso = True
+                    break  # recomeca o pool (mudou de estado)
         return n_matches
 
     def etapa3_match_agrupado(self) -> "ConciliadorContabil":
         n1 = self._etapa3_um_lado("debito")   # N creditos : 1 debito
         n2 = self._etapa3_um_lado("credito")  # 1 credito : N debitos
         logger.info(
-            "Etapa 3 (match agrupado N:1 / 1:N por período): %d + %d grupo(s) conciliado(s).",
+            "Etapa 3 (match agrupado N:1 / 1:N em toda a base): %d + %d grupo(s) conciliado(s).",
             n1, n2,
         )
         return self
