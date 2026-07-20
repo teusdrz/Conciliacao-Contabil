@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# Planilhas reais com dados contabeis sensiveis - nunca versionar.
+# Use config/config.exemplo.yaml como referencia de estrutura.
+*.xlsx
+!config/*.xlsx
