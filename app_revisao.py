@@ -25,7 +25,7 @@ from excel_io import carregar_razao, ler_saldo_balancete  # noqa: E402
 from motor_conciliacao import ConciliadorContabil  # noqa: E402
 from relatorios import gerar_excel_saida  # noqa: E402
 
-st.set_page_config(page_title="Conciliador Contábil Inteligente", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Conciliador Contábil Inteligente", layout="wide")
 
 CORES_STATUS = {
     "Conciliado - Exato": "#1D9E75",
@@ -45,7 +45,7 @@ def _cor_linha(status: str) -> str:
 
 
 def main() -> None:
-    st.title("📊 Conciliador Contábil Inteligente")
+    st.title("Conciliador Contábil Inteligente")
     st.caption(
         "Arraste o Excel do razão contábil, confira os parâmetros na barra lateral e rode a "
         "conciliação. O resultado aparece aqui e também fica disponível para download."

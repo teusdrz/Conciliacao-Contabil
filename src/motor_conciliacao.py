@@ -100,6 +100,7 @@ class ConciliadorContabil:
             self.df.loc[idx, "regra_aplicada"] = regra
             self.df.loc[idx, "contraparte"] = ", ".join(contrapartes)
             self.df.loc[idx, "residual_centavos"] = 0
+            self.df.loc[idx, "obs"] = "efeito"
         self.trilha_auditoria.append(
             EventoAuditoria(etapa, regra, id_grupo, ids_lote, valor_total, detalhe)
         )
