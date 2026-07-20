@@ -135,6 +135,20 @@ def _aba_detalhe(wb: Workbook, resultado: pd.DataFrame) -> None:
         cel = ws.cell(row=linha_total, column=j, value=f"=SUBTOTAL(9,{letra}2:{letra}{ultima_linha})")
         cel.number_format = FMT_MOEDA
         cel.font = Font(name=FONTE, bold=True)
+
+    linha_legenda = linha_total + 1
+    j_valor = colunas.index("valor") + 1
+    j_residual = colunas.index("valor_residual") + 1
+    fonte_legenda = Font(name=FONTE, italic=True, size=9, color="6B7280")
+    ws.cell(
+        row=linha_legenda, column=j_valor,
+        value="Valor: lançamento original (não muda com a conciliação)",
+    ).font = fonte_legenda
+    ws.cell(
+        row=linha_legenda, column=j_residual,
+        value="Valor_Residual: saldo real em aberto (zera quando Obs = \"efeito zero\")",
+    ).font = fonte_legenda
+
     ws.auto_filter.ref = f"A1:{get_column_letter(len(colunas))}{ultima_linha}"
 
 
