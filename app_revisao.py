@@ -21,6 +21,12 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from classificador import aplicar_classificacao  # noqa: E402
+from conciliacao_bancaria import (  # noqa: E402
+    ABA_FINANCEIRO_PADRAO,
+    ABA_RAZAO_PADRAO,
+    ABA_SAIDA_PADRAO,
+)
+from conciliacao_bancaria import executar as executar_bancario  # noqa: E402
 from excel_io import atualizar_obs_arquivo_original, carregar_razao, ler_saldo_balancete  # noqa: E402
 from motor_conciliacao import ConciliadorContabil  # noqa: E402
 from relatorios import gerar_excel_saida  # noqa: E402
@@ -44,8 +50,19 @@ def _cor_linha(status: str) -> str:
     return f"background-color: {cor}22"  # transparência leve, so funciona bem em fundo claro ou escuro
 
 
-def main() -> None:
-    st.title("Conciliador Contábil Inteligente")
+CORES_STATUS_BANCARIO = {
+    "Conciliado": "#1D9E75",
+    "Só no Razão": "#EF9F27",
+    "Só no Financeiro": "#D85A30",
+}
+
+
+def _cor_linha_bancaria(status: str) -> str:
+    cor = CORES_STATUS_BANCARIO.get(status, "#B4B2A9")
+    return f"background-color: {cor}22"
+
+
+def painel_intra_razao() -> None:
     st.caption(
         "Arraste o Excel do razão contábil, confira os parâmetros na barra lateral e rode a "
         "conciliação. O resultado aparece aqui e também fica disponível para download."
@@ -216,6 +233,108 @@ def main() -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             help="Relatório à parte com Detalhe_Conciliacao, Resumo_Periodo, Itens_Em_Aberto e Ponte_Balancete.",
         )
+
+
+def painel_bancario() -> None:
+    st.caption(
+        'Suba um Excel com as abas "01.Razão" e "02.Financeiro" para conciliar linha a linha '
+        "(razão contábil x extrato bancário). Gera uma aba nova de resultado, sem alterar mais "
+        "nada do arquivo original."
+    )
+
+    with st.expander("Parâmetros", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            aba_razao = st.text_input("Aba do razão", value=ABA_RAZAO_PADRAO, key="banc_aba_razao")
+            aba_financeiro = st.text_input("Aba do financeiro", value=ABA_FINANCEIRO_PADRAO, key="banc_aba_financeiro")
+            linha_cabecalho_razao = st.number_input("Linha do cabeçalho do razão", min_value=1, value=5, key="banc_linha_cab")
+        with col2:
+            tolerancia_valor = st.number_input(
+                "Tolerância de valor (R$)", min_value=0.0, value=0.01, step=0.01, format="%.2f", key="banc_tol_valor",
+            )
+            tolerancia_dias = st.number_input("Tolerância de dias", min_value=0, value=5, key="banc_tol_dias")
+            nome_aba_saida = st.text_input("Nome da aba de saída", value=ABA_SAIDA_PADRAO, key="banc_aba_saida")
+
+    arquivo_up = st.file_uploader(
+        'Arraste ou selecione o Excel com "01.Razão" + "02.Financeiro" (.xlsx)',
+        type=["xlsx"], key="banc_uploader",
+    )
+
+    if arquivo_up is None:
+        st.info("Nenhum arquivo carregado ainda. Assim que você soltar o `.xlsx` aqui, o botão de rodar aparece.")
+        return
+
+    if not st.button("▶ Rodar conciliação bancária", type="primary", key="banc_run"):
+        st.caption(f"Arquivo carregado: **{arquivo_up.name}** ({arquivo_up.size / 1024:.0f} KB). Clique no botão para rodar.")
+        return
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="conciliador_bancario_"))
+    caminho_tmp = tmp_dir / arquivo_up.name
+    caminho_tmp.write_bytes(arquivo_up.getvalue())
+    caminho_saida = tmp_dir / f"{Path(arquivo_up.name).stem}_bancario.xlsx"
+
+    with st.spinner("Lendo o razão e o financeiro, casando lançamentos..."):
+        try:
+            resultado = executar_bancario(
+                caminho_tmp, caminho_saida,
+                aba_razao=aba_razao, aba_financeiro=aba_financeiro,
+                linha_cabecalho_razao=int(linha_cabecalho_razao),
+                nome_aba_saida=nome_aba_saida,
+                tolerancia_valor=float(tolerancia_valor), tolerancia_dias=int(tolerancia_dias),
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Não consegui conciliar esse arquivo. Detalhe técnico: {exc}")
+            return
+
+    st.success("Conciliação bancária concluída.")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Razão", f"R$ {resultado.total_razao:,.2f}")
+    c2.metric("Total Financeiro", f"R$ {resultado.total_financeiro:,.2f}")
+    c3.metric("Diferença total", f"R$ {resultado.total_diferenca:,.2f}")
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Conciliado", resultado.qtd_conciliado)
+    c5.metric("Só no Razão", resultado.qtd_so_razao)
+    c6.metric("Só no Financeiro", resultado.qtd_so_financeiro)
+
+    st.divider()
+
+    st.subheader("Detalhe da conciliação")
+    colunas = [
+        "conta", "data_razao", "historico_razao", "documento_razao", "valor_razao",
+        "data_financeiro", "operacao_financeiro", "documento_financeiro", "valor_financeiro",
+        "diferenca", "status",
+    ]
+    st.dataframe(
+        resultado.df[colunas]
+        .style.format({"valor_razao": "R$ {:,.2f}", "valor_financeiro": "R$ {:,.2f}", "diferenca": "R$ {:,.2f}"})
+        .map(_cor_linha_bancaria, subset=["status"]),
+        use_container_width=True, hide_index=True, height=420,
+    )
+
+    st.divider()
+    st.download_button(
+        "⬇ Baixar Excel com a aba de conciliação bancária",
+        data=caminho_saida.read_bytes(),
+        file_name=caminho_saida.name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        key="banc_download",
+        help=f"Arquivo original + aba nova '{nome_aba_saida}' com o resultado da conciliação.",
+    )
+
+
+def main() -> None:
+    st.title("Conciliador Contábil Inteligente")
+
+    aba_intra, aba_bancaria = st.tabs(["🧮 Conciliação Intra-Razão", "🏦 Conciliação Bancária (Razão x Financeiro)"])
+
+    with aba_intra:
+        painel_intra_razao()
+
+    with aba_bancaria:
+        painel_bancario()
 
 
 if __name__ == "__main__":
