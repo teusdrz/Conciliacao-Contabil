@@ -21,18 +21,10 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from relatorios import (
-    BORDA_CELULA,
-    COR_ABERTO_ANTIGO,
-    COR_CONCILIADO,
-    FMT_DATA,
-    FMT_MOEDA,
-    FONTE,
-    _estilo_cabecalho,
-)
+from relatorios import BORDA_CELULA, FMT_DATA, FMT_MOEDA, FONTE
 
 logger = logging.getLogger("conciliador.conciliacao_bancaria")
 
@@ -42,10 +34,20 @@ ABA_FINANCEIRO_PADRAO = "02.Financeiro"
 # Financeiro" (34) estourava esse limite e o Excel/Google Sheets recusa ou
 # corrompe o nome da aba nesse caso.
 ABA_SAIDA_PADRAO = "04.Razão x Financeiro"
+# Aba apos a qual a de saida deve ficar posicionada (em vez de ir para o final
+# do workbook), para acompanhar visualmente a aba "03.Suporte" ja existente.
+ABA_REFERENCIA_POSICAO = "03.Suporte"
 
 STATUS_CONCILIADO = "Conciliado"
 STATUS_SO_RAZAO = "Só no Razão"
 STATUS_SO_FINANCEIRO = "Só no Financeiro"
+
+# Paleta propria desta aba (mais sobria/profissional) - nao mexe nas cores
+# compartilhadas de relatorios.py usadas pelo motor intra-razao.
+COR_CABECALHO_BANCARIO = "0B3D66"      # azul-marinho
+COR_TEXTO_CABECALHO_BANCARIO = "FFFFFF"
+COR_CONCILIADO_BANCARIO = "D9EAD9"     # verde suave
+COR_DIFERENCA_BANCARIO = "F4D4D4"      # vermelho suave
 
 
 def _parece_conta_bancaria(valor) -> bool:
@@ -65,6 +67,21 @@ def _parse_data(valor) -> datetime | None:
             except ValueError:
                 continue
     return None
+
+
+def _eh_cancelamento_razao(historico) -> bool:
+    """Lancamentos de cancelamento/estorno no razao vem com "CANC" no inicio do
+    historico (ex.: "CANC PGTO DESPESAS BANCÁRIAS...")."""
+    return isinstance(historico, str) and "CANC" in historico.upper()
+
+
+def _eh_cancelamento_financeiro(operacao) -> bool:
+    """Equivalente no extrato financeiro: operacoes "CANCELAMENTO..." ou
+    "ESTORNO..."."""
+    if not isinstance(operacao, str):
+        return False
+    operacao_upper = operacao.upper()
+    return "CANCEL" in operacao_upper or "ESTORNO" in operacao_upper
 
 
 @dataclass
@@ -203,28 +220,41 @@ def conciliar_razao_financeiro(
         razao_conta = df_razao[df_razao["conta"] == conta].reset_index(drop=True)
         fin_conta = df_financeiro[df_financeiro["conta"] == conta].reset_index(drop=True)
 
-        candidatos = []
-        for i, r in razao_conta.iterrows():
-            valor_r_cent = round(r["valor"] * 100)
-            for j, f in fin_conta.iterrows():
-                valor_f_cent = round(f["valor"] * 100)
-                if abs(valor_r_cent - valor_f_cent) > tol_cent:
-                    continue
-                diff_dias = abs((r["data"] - f["data"]).days)
-                if diff_dias > tolerancia_dias:
-                    continue
-                candidatos.append((diff_dias, abs(valor_r_cent - valor_f_cent), i, j))
+        idx_cancel_razao = {i for i, r in razao_conta.iterrows() if _eh_cancelamento_razao(r["historico"])}
+        idx_cancel_fin = {j for j, f in fin_conta.iterrows() if _eh_cancelamento_financeiro(f["operacao"])}
 
-        candidatos.sort(key=lambda c: (c[0], c[1]))
         usados_razao: set[int] = set()
         usados_fin: set[int] = set()
         pares: list[tuple[int, int]] = []
-        for _, _, i, j in candidatos:
-            if i in usados_razao or j in usados_fin:
-                continue
-            usados_razao.add(i)
-            usados_fin.add(j)
-            pares.append((i, j))
+
+        # 1a passada: casa cancelamento (razao) só com cancelamento/estorno
+        # (financeiro) - assim eles nao competem nem perdem pro casamento dos
+        # lançamentos normais. 2a passada: casa o restante (lançamentos normais)
+        # entre si, exatamente como antes.
+        for somente_cancelamento in (True, False):
+            candidatos = []
+            for i, r in razao_conta.iterrows():
+                if i in usados_razao or (i in idx_cancel_razao) != somente_cancelamento:
+                    continue
+                valor_r_cent = round(r["valor"] * 100)
+                for j, f in fin_conta.iterrows():
+                    if j in usados_fin or (j in idx_cancel_fin) != somente_cancelamento:
+                        continue
+                    valor_f_cent = round(f["valor"] * 100)
+                    if abs(valor_r_cent - valor_f_cent) > tol_cent:
+                        continue
+                    diff_dias = abs((r["data"] - f["data"]).days)
+                    if diff_dias > tolerancia_dias:
+                        continue
+                    candidatos.append((diff_dias, abs(valor_r_cent - valor_f_cent), i, j))
+
+            candidatos.sort(key=lambda c: (c[0], c[1]))
+            for _, _, i, j in candidatos:
+                if i in usados_razao or j in usados_fin:
+                    continue
+                usados_razao.add(i)
+                usados_fin.add(j)
+                pares.append((i, j))
 
         for i, j in pares:
             r = razao_conta.loc[i]
@@ -336,12 +366,30 @@ def executar(
         df_razao, df_financeiro, tolerancia_valor=tolerancia_valor, tolerancia_dias=tolerancia_dias,
     )
 
+    # nome do banco de cada conta vem do proprio cabecalho de bloco da conta em
+    # 02.Financeiro (01.Razao so tem o codigo da conta, nao o nome do banco).
+    mapa_banco = df_financeiro.groupby("conta")["banco"].first().to_dict()
+    df_resultado.insert(1, "banco", df_resultado["conta"].map(mapa_banco))
+
     resultado = ResultadoConciliacaoBancaria(
         df=df_resultado, contas=sorted(contas), periodo_inicio=data_min, periodo_fim=data_max,
     )
 
     _gravar_aba_conciliacao(arquivo, resultado, arquivo_saida, nome_aba=nome_aba_saida)
     return resultado
+
+
+def _estilo_cabecalho_bancario(ws, ultima_coluna: int, linha: int) -> None:
+    """Cabecalho com a paleta propria desta aba (azul-marinho), sem travar
+    paineis - diferente do _estilo_cabecalho de relatorios.py."""
+    fill = PatternFill("solid", fgColor=COR_CABECALHO_BANCARIO)
+    fonte = Font(name=FONTE, bold=True, color=COR_TEXTO_CABECALHO_BANCARIO, size=10)
+    for col in range(1, ultima_coluna + 1):
+        cel = ws.cell(row=linha, column=col)
+        cel.fill = fill
+        cel.font = fonte
+        cel.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[linha].height = 32
 
 
 def _gravar_aba_conciliacao(
@@ -367,7 +415,7 @@ def _gravar_aba_conciliacao(
 
     linha = 1
     ws.cell(row=linha, column=1, value="Conciliação Bancária - 01.Razão x 02.Financeiro").font = Font(
-        name=FONTE, bold=True, size=13,
+        name=FONTE, bold=True, size=13, color=COR_CABECALHO_BANCARIO,
     )
     linha += 1
     periodo_txt = (
@@ -396,6 +444,7 @@ def _gravar_aba_conciliacao(
 
     colunas = [
         ("conta", "Conta", 16, None),
+        ("banco", "Banco", 26, None),
         ("data_razao", "Data Razão", 13, FMT_DATA),
         ("historico_razao", "Histórico Razão", 38, None),
         ("documento_razao", "Documento Razão", 20, None),
@@ -410,10 +459,10 @@ def _gravar_aba_conciliacao(
     linha_cabecalho = linha
     for j, (_, titulo, _largura, _fmt) in enumerate(colunas, start=1):
         ws.cell(row=linha_cabecalho, column=j, value=titulo)
-    _estilo_cabecalho(ws, len(colunas), linha=linha_cabecalho)
+    _estilo_cabecalho_bancario(ws, len(colunas), linha=linha_cabecalho)
 
-    fill_conciliado = PatternFill("solid", fgColor=COR_CONCILIADO)
-    fill_diferenca = PatternFill("solid", fgColor=COR_ABERTO_ANTIGO)
+    fill_conciliado = PatternFill("solid", fgColor=COR_CONCILIADO_BANCARIO)
+    fill_diferenca = PatternFill("solid", fgColor=COR_DIFERENCA_BANCARIO)
 
     for i, (_, linha_dados) in enumerate(resultado.df.iterrows(), start=linha_cabecalho + 1):
         status = linha_dados["status"]
@@ -431,7 +480,16 @@ def _gravar_aba_conciliacao(
     for j, (_, _titulo, largura, _fmt) in enumerate(colunas, start=1):
         ws.column_dimensions[get_column_letter(j)].width = largura
 
-    ws.freeze_panes = ws.cell(row=linha_cabecalho + 1, column=1)
+    # painéis destravados (sem freeze_panes) a pedido do usuário.
+    ws.freeze_panes = None
+
+    # posiciona a aba nova logo depois de "03.Suporte" (em vez de no final do
+    # workbook, onde wb.create_sheet() a colocou por padrão).
+    if ABA_REFERENCIA_POSICAO in wb.sheetnames:
+        indice_atual = wb.sheetnames.index(nome_aba)
+        indice_alvo = wb.sheetnames.index(ABA_REFERENCIA_POSICAO) + 1
+        if indice_atual != indice_alvo:
+            wb.move_sheet(nome_aba, offset=indice_alvo - indice_atual)
 
     caminho_saida = Path(arquivo_saida)
     wb.save(caminho_saida)
